@@ -20,6 +20,34 @@ with st.sidebar:
     min_severity = st.selectbox("Min severity (show >=)", ["low","medium","high","critical"], index=0)
     run_query = st.button("Refresh")
 
+st.header("Run Dark-Web Scan")
+
+new_org = st.text_input("Organization to scan", "")
+run_scan = st.button("Generate Seeds + Crawl")
+
+import subprocess
+
+if run_scan and new_org:
+    st.info(f"Generating seeds for {new_org}… please wait")
+    with st.spinner("Finding onion links..."):
+        subprocess.run(["python", "-m", "tools.seed_generator", new_org], check=False)
+
+    seed_file = f"seeds/{new_org}.txt"
+    if not os.path.exists(seed_file):
+        st.error("No seeds generated. Try a different query.")
+    else:
+        st.success("Seeds generated successfully!")
+
+        st.info("Starting Tor crawler… this may take several minutes")
+        with st.spinner("Crawling onion sites…"):
+            subprocess.run([
+                "python", "-m", "services.crawler.crawler_tor",
+                new_org, seed_file, "--rotate"
+            ], check=False)
+
+        st.success("Crawling completed.")
+
+
 # helper to load data
 def load_crawled(limit=200, org_filter=None, since_days=30):
     q = "SELECT id, org_id, url, status_code, fetched_at, substring(content_snippet,1,400) AS snippet FROM crawled_pages"
@@ -77,3 +105,4 @@ if run_query:
             st.code(row['indicator'])
 else:
     st.info("Set filters and click Refresh to load data.")
+
