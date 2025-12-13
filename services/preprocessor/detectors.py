@@ -4,7 +4,7 @@ import re
 from typing import Dict, List
 
 # Simple high-precision regexes for initial detectors
-RE_EMAIL_PASS = re.compile(r"\b([A-Za-z0-9._%+-]+:[^\s]{6,})\b")
+RE_EMAIL_PASS = re.compile(r"\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}:[^\s:]{6,})\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 RE_BTC = re.compile(r"\b([13][a-km-zA-HJ-NP-Z1-9]{25,34})\b")
 RE_ETH = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
@@ -53,10 +53,12 @@ def detect_indicators(text: str) -> Dict[str, List[str]]:
 
     return found
 
-def score_indicator(indicator_type: str) -> str:
-    """Map indicator type to severity (simple heuristic)."""
+def score_indicator(indicator_type: str, indicator_value: str) -> str:
     if indicator_type == "credential-leak":
-        return "high"
+        # must contain @ to be real credentials
+        if "@" in indicator_value:
+            return "high"
+        return "low"
     if indicator_type in ("btc-address", "eth-address"):
         return "medium"
     if indicator_type in ("credit-card-like", "sqli-signature"):
@@ -64,3 +66,4 @@ def score_indicator(indicator_type: str) -> str:
     if indicator_type == "email":
         return "low"
     return "low"
+
