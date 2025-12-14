@@ -99,17 +99,16 @@ def save_page_to_db(org_name: str, url: str, query_text: str = None,
             print("Detections found:", {k: len(v) for k, v in indicators.items()})
 
             for itype, items in indicators.items():
-                sev = score_indicator(itype,item)
-
                 for item in items:
-                    # Extract context around match
+                    sev = score_indicator(itype, item)
+
                     context_index = cleaned_text.find(item.lower())
                     if context_index != -1:
                         start = max(0, context_index - 60)
-                        end = min(len(text), context_index + len(item) + 60)
-                        evidence_text = text[start:end]
+                        end = min(len(cleaned_text), context_index + len(item) + 60)
+                        evidence_text = cleaned_text[start:end]
                     else:
-                        evidence_text = snippet  # fallback
+                        evidence_text = snippet
 
                     t = Threat(
                         org_id=org.id,
@@ -121,6 +120,7 @@ def save_page_to_db(org_name: str, url: str, query_text: str = None,
                         created_at=datetime.utcnow()
                     )
                     db.add(t)
+
 
             db.commit()
             print("Inserted threats for crawled_page_id=", cp.id)
