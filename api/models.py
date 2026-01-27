@@ -2,6 +2,8 @@
 import datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+
 
 Base = declarative_base()
 
@@ -36,6 +38,7 @@ class CrawledPage(Base):
     content = sa.Column(sa.Text, nullable=True)  # store cleaned/prettified HTML or text
     content_snippet = sa.Column(sa.Text, nullable=True)  # short snippet for quick listing
     fetched_at = sa.Column(sa.DateTime(timezone=True), default=datetime.datetime.utcnow)
+    clean_text = Column(Text, nullable=True)
 
     org = relationship("Org", back_populates="crawled_pages")
     query = relationship("Query", back_populates="crawled_pages")

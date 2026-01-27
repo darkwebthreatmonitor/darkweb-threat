@@ -12,6 +12,7 @@ from services.crawler.tor_control import renew_tor_circuit
 from services.crawler.crawler_db import save_page_to_db
 from services.crawler.tor_playwright import fetch_via_tor_playwright
 
+
 # ---------------- CONFIG ----------------
 
 PER_HOST_DELAY = 2.0
