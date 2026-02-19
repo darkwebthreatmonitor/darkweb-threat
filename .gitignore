@@ -19,3 +19,8 @@ playwright/
 # mac/windows
 .DS_Store
 Thumbs.db
+# ML models
+models/
+*.pt
+*.bin
+*.pth

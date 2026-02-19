@@ -10,7 +10,7 @@ from api.db import SessionLocal, engine
 from api.models import Base, Org, Query, CrawledPage, Threat
 from services.preprocessor.html_cleaner import clean_html
 
-from services.preprocessor.detectors import detect_indicators, score_indicator
+from services.preprocessor.hybrid_detector import analyze_page
 
 # NOTE: do NOT call Base.metadata.create_all here (Alembic manages schema)
 
@@ -85,21 +85,13 @@ def save_page_to_db(
 
         print(f"[OK] Saved CrawledPage id={cp.id}")
 
-        # --- detectors ---
-        indicators = detect_indicators(clean_text_value)
-        for itype, items in indicators.items():
-            for item in items:
-                sev = score_indicator(itype, item)
-                t = Threat(
-                    org_id=org.id,
-                    crawled_page_id=cp.id,
-                    indicator_type=itype,
-                    indicator=str(item)[:2000],
-                    severity=sev,
-                    evidence=str(item)[:2000],
-                    created_at=datetime.utcnow(),
-                )
-                db.add(t)
+        # --- HYBRID DETECTOR (RULE + ML) ---
+        analyze_page(
+            engine=engine,
+            org_id=org.id,
+            page_id=cp.id,
+            clean_text=clean_text_value
+        )
 
         db.commit()
 

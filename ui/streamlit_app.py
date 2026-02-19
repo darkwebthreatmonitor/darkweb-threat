@@ -1,150 +1,226 @@
-# ui/streamlit_app.py
-import streamlit as st
-import pandas as pd
-from sqlalchemy import create_engine, text
 import os
-from datetime import datetime
 import subprocess
+import pandas as pd
+import streamlit as st
+from sqlalchemy import create_engine, text
+from datetime import datetime, timedelta
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://dev:dev@localhost:5432/dwthreat")
+# =============================
+# STREAMLIT CONFIG
+# =============================
+st.set_page_config(page_title="DW Threat Monitor", layout="wide")
+
+# =============================
+# SESSION STATE
+# =============================
+if "selected_page" not in st.session_state:
+    st.session_state.selected_page = None
+
+if "run_query" not in st.session_state:
+    st.session_state.run_query = False
+
+
+# =============================
+# DATABASE
+# =============================
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://dev:dev@localhost:5432/dwthreat"
+)
 engine = create_engine(DATABASE_URL, future=True)
 
-st.set_page_config(page_title="DW Threat Monitor", layout="wide")
+
+# =============================
+# SQL LOADERS (FILTERED + LIMIT)
+# =============================
+def load_crawled(org, since_days, limit):
+    q = """
+    SELECT cp.id, cp.url, cp.status_code, cp.fetched_at,
+           substring(cp.content_snippet,1,400) AS snippet
+    FROM crawled_pages cp
+    JOIN orgs o ON o.id = cp.org_id
+    WHERE (:org='' OR o.name ILIKE :orglike)
+      AND cp.fetched_at > :since
+    ORDER BY cp.fetched_at DESC
+    LIMIT :lim
+    """
+
+    params = {
+        "org": org,
+        "orglike": f"%{org}%",
+        "since": datetime.utcnow() - timedelta(days=since_days),
+        "lim": limit
+    }
+
+    return pd.read_sql(text(q), engine.connect(), params=params)
+
+
+def load_threats(org, since_days, min_sev, limit):
+
+    sev_rank = {"low":1,"medium":2,"high":3,"critical":4}
+
+    q = """
+    SELECT t.*, o.name AS org_name
+    FROM threats t
+    JOIN orgs o ON o.id=t.org_id
+    WHERE (:org='' OR o.name ILIKE :orglike)
+      AND t.created_at > :since
+    ORDER BY t.created_at DESC
+    LIMIT :lim
+    """
+
+    df = pd.read_sql(
+        text(q),
+        engine.connect(),
+        params={
+            "org": org,
+            "orglike": f"%{org}%",
+            "since": datetime.utcnow() - timedelta(days=since_days),
+            "lim": limit
+        }
+    )
+
+    if not df.empty:
+        df = df[df["severity"].map(sev_rank) >= sev_rank[min_sev]]
+
+    return df
+
+
+def load_full_page(pid):
+    q = """
+    SELECT url, clean_text, fetched_at
+    FROM crawled_pages
+    WHERE id=:pid
+    """
+    return pd.read_sql(text(q), engine.connect(), params={"pid": pid})
+
+
+# ==========================================================
+# ⭐ PAGE VIEW MODE (SHOW CLEAN TEXT)
+# ==========================================================
+if st.session_state.selected_page is not None:
+
+    page = load_full_page(st.session_state.selected_page)
+
+    st.header("Crawled Page Text")
+
+    if not page.empty:
+        st.write("URL:", page.iloc[0]["url"])
+        st.write("Fetched:", page.iloc[0]["fetched_at"])
+
+        st.text_area(
+            "Clean Extracted Text",
+            page.iloc[0]["clean_text"],
+            height=650
+        )
+    else:
+        st.warning("Page not found")
+
+    if st.button("⬅ Back to Dashboard"):
+        st.session_state.selected_page = None
+        st.rerun()
+
+    st.stop()
+
+
+# ==========================================================
+# DASHBOARD
+# ==========================================================
 st.title("Dark-Web Threat Monitor — Dashboard")
 
-# -------------------------------
-# Sidebar filters
-# -------------------------------
+
+# =============================
+# SIDEBAR FILTERS
+# =============================
 with st.sidebar:
-    st.header("Filters")
-    org = st.text_input("Organization (name)", "")
-    since_days = st.number_input("Show items from last N days", min_value=1, max_value=365, value=30)
-    min_severity = st.selectbox("Min severity (show >=)", ["low","medium","high","critical"], index=0)
-    run_query = st.button("Refresh")
 
-# -------------------------------
-# Run Scan Section
-# -------------------------------
+    st.header("Search Filters")
+
+    org = st.text_input("Organization", "")
+    since_days = st.number_input("Days Back", 1, 365, 30)
+
+    min_severity = st.selectbox(
+        "Minimum Severity",
+        ["low","medium","high","critical"]
+    )
+
+    max_rows = st.slider(
+        "Max Rows to Load",
+        10, 2000, 200, step=10
+    )
+
+    if st.button("Refresh Crawled Data"):
+        st.session_state.run_query = True
+
+
+# =============================
+# SCAN SECTION
+# =============================
 st.header("Run Dark-Web Scan")
-new_org = st.text_input("Organization to scan", "")
-run_scan = st.button("Generate Seeds + Crawl")
 
-if run_scan and new_org:
-    st.info(f"Generating seeds for {new_org}…")
-    with st.spinner("Finding onion links..."):
-        subprocess.run(["python", "-m", "tools.seed_generator", new_org], check=False)
+new_org = st.text_input("Organization to scan", "")
+
+if st.button("Generate Seeds + Crawl") and new_org:
+
+    with st.spinner("Generating seeds..."):
+        subprocess.run(
+            ["python","-m","tools.seed_generator",new_org],
+            check=False
+        )
 
     seed_file = f"seeds/{new_org}.txt"
-    if not os.path.exists(seed_file):
-        st.error("No seeds generated.")
-    else:
-        st.success("Seeds generated successfully.")
 
-        st.info("Starting Tor crawler…")
-        with st.spinner("Crawling onion sites…"):
+    if os.path.exists(seed_file):
+        with st.spinner("Crawling via Tor..."):
             subprocess.run([
-                "python", "-m", "services.crawler.crawler_tor",
-                new_org, seed_file, "--rotate"
+                "python","-m",
+                "services.crawler.crawler_tor",
+                new_org,
+                seed_file,
+                "--rotate"
             ], check=False)
-        st.success("Crawling completed.")
+
+        st.success("Crawl Completed")
+    else:
+        st.error("Seed generation failed")
 
 
-# -------------------------------
-# SQL Helpers
-# -------------------------------
-def load_crawled(limit=200, org_filter=None, since_days=30):
-    q = """
-        SELECT id, org_id, url, status_code, fetched_at,
-               substring(content_snippet,1,400) AS snippet
-        FROM crawled_pages
-    """
-    params = {}
-    conds = []
-    if org_filter:
-        conds.append("org_id = (SELECT id FROM orgs WHERE name = :org LIMIT 1)")
-        params["org"] = org_filter
+# ==========================================================
+# DATA DISPLAY
+# ==========================================================
+if st.session_state.run_query:
 
-    conds.append("fetched_at >= now() - (:days || ' days')::interval")
-    params["days"] = since_days
+    crawled = load_crawled(org, since_days, max_rows)
+    threats = load_threats(org, since_days, min_severity, max_rows)
 
-    if conds:
-        q += " WHERE " + " AND ".join(conds)
+    # Metrics
+    col1,col2,col3,col4 = st.columns(4)
+    col1.metric("Pages Loaded", len(crawled))
+    col2.metric("Threats Loaded", len(threats))
+    col3.metric("High", (threats.severity=="high").sum())
+    col4.metric("Critical", (threats.severity=="critical").sum())
 
-    q += " ORDER BY fetched_at DESC LIMIT :lim"
-    params["lim"] = limit
-    return pd.read_sql(text(q), engine.connect(), params=params)
-
-
-def load_threats(limit=200, org_filter=None, since_days=30, min_sev="low"):
-    q = """
-        SELECT 
-            t.id, t.org_id, o.name AS org_name,
-            t.crawled_page_id,
-            t.indicator_type,
-            substring(t.indicator,1,200) AS indicator,
-            t.severity,
-            t.evidence,
-            t.created_at
-        FROM threats t
-        JOIN orgs o ON o.id = t.org_id
-    """
-    params = {}
-    conds = []
-
-    if org_filter:
-        conds.append("t.org_id = (SELECT id FROM orgs WHERE name = :org LIMIT 1)")
-        params["org"] = org_filter
-
-    conds.append("t.created_at >= now() - (:days || ' days')::interval")
-    params["days"] = since_days
-
-    order_map = {"low":1,"medium":2,"high":3,"critical":4}
-    conds.append("""
-        (CASE 
-            WHEN t.severity='low' THEN 1
-            WHEN t.severity='medium' THEN 2
-            WHEN t.severity='high' THEN 3
-            WHEN t.severity='critical' THEN 4
-            ELSE 0 END) >= :minsev
-    """)
-    params["minsev"] = order_map[min_sev]
-
-    if conds:
-        q += " WHERE " + " AND ".join(conds)
-
-    q += " ORDER BY t.created_at DESC LIMIT :lim"
-    params["lim"] = limit
-
-    return pd.read_sql(text(q), engine.connect(), params=params)
-
-
-# -------------------------------
-# Display Results
-# -------------------------------
-if run_query:
-    crawled = load_crawled(limit=500, org_filter=org if org else None, since_days=since_days)
-    threats = load_threats(limit=500, org_filter=org if org else None, since_days=since_days, min_sev=min_severity)
-
-    st.subheader("Recent Crawled Pages")
-    st.dataframe(crawled)
+    st.subheader("Crawled Pages")
+    st.dataframe(crawled, use_container_width=True)
 
     st.subheader("Detected Threats")
-    st.dataframe(threats)
 
-    # ---------------------------
-    # FIXED: Evidence Display
-    # ---------------------------
-    if not threats.empty:
-        st.markdown("## Threat Details (Top 10)")
-        for _, row in threats.head(10).iterrows():
-            st.markdown(f"""
-            **Org:** {row['org_name']}  
-            **Type:** {row['indicator_type']}  
-            **Severity:** :red[{row['severity']}]  
-            **Indicator:** `{row['indicator']}`  
-            """)
-            st.markdown("**Evidence (snippet that triggered detection):**")
-            st.code(row["evidence"] if row["evidence"] else "No evidence stored")
-            st.write("---")
+    for _, row in threats.iterrows():
+
+        st.markdown(f"""
+**Org:** {row['org_name']}  
+**Severity:** {row['severity']}
+""")
+
+        if st.button(
+            f"View Crawled Text — Page {row['crawled_page_id']}",
+            key=f"view_{row['id']}"
+        ):
+            st.session_state.selected_page = int(row["crawled_page_id"])
+            st.rerun()
+
+        st.code(row.get("evidence","No evidence"))
+        st.write("---")
+
 else:
-    st.info("Set filters and click Refresh to load data.")
+    st.info("Set filters and press Refresh Crawled Data")
