@@ -1,9 +1,15 @@
 import os
+import sys
 import subprocess
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
+
+# Fix import path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from services.llm.report_generator import generate_org_report
 
 # =============================
 # STREAMLIT CONFIG
@@ -19,7 +25,6 @@ if "selected_page" not in st.session_state:
 if "run_query" not in st.session_state:
     st.session_state.run_query = False
 
-
 # =============================
 # DATABASE
 # =============================
@@ -29,10 +34,9 @@ DATABASE_URL = os.getenv(
 )
 engine = create_engine(DATABASE_URL, future=True)
 
-
-# =============================
-# SQL LOADERS (FILTERED + LIMIT)
-# =============================
+# ==========================================================
+# DB HELPERS
+# ==========================================================
 def load_crawled(org, since_days, limit):
     q = """
     SELECT cp.id, cp.url, cp.status_code, cp.fetched_at,
@@ -95,8 +99,27 @@ def load_full_page(pid):
     return pd.read_sql(text(q), engine.connect(), params={"pid": pid})
 
 
+def get_pages_for_org(org_name):
+    if not org_name:
+        return []
+
+    q = """
+    SELECT cp.clean_text
+    FROM crawled_pages cp
+    JOIN orgs o ON o.id = cp.org_id
+    WHERE o.name ILIKE :org
+    AND cp.clean_text IS NOT NULL
+    ORDER BY cp.id DESC
+    LIMIT 40
+    """
+
+    with engine.begin() as conn:
+        rows = conn.execute(text(q), {"org": f"%{org_name}%"}).fetchall()
+
+    return [r[0] for r in rows]
+
 # ==========================================================
-# ⭐ PAGE VIEW MODE (SHOW CLEAN TEXT)
+# PAGE VIEW MODE
 # ==========================================================
 if st.session_state.selected_page is not None:
 
@@ -122,18 +145,15 @@ if st.session_state.selected_page is not None:
 
     st.stop()
 
-
 # ==========================================================
 # DASHBOARD
 # ==========================================================
 st.title("Dark-Web Threat Monitor — Dashboard")
 
-
 # =============================
-# SIDEBAR FILTERS
+# SIDEBAR
 # =============================
 with st.sidebar:
-
     st.header("Search Filters")
 
     org = st.text_input("Organization", "")
@@ -144,17 +164,13 @@ with st.sidebar:
         ["low","medium","high","critical"]
     )
 
-    max_rows = st.slider(
-        "Max Rows to Load",
-        10, 2000, 200, step=10
-    )
+    max_rows = st.slider("Max Rows", 10, 2000, 200)
 
     if st.button("Refresh Crawled Data"):
         st.session_state.run_query = True
 
-
 # =============================
-# SCAN SECTION
+# RUN SCAN (optional)
 # =============================
 st.header("Run Dark-Web Scan")
 
@@ -163,40 +179,32 @@ new_org = st.text_input("Organization to scan", "")
 if st.button("Generate Seeds + Crawl") and new_org:
 
     with st.spinner("Generating seeds..."):
-        subprocess.run(
-            ["python","-m","tools.seed_generator",new_org],
-            check=False
-        )
+        subprocess.run(["python","-m","tools.seed_generator",new_org], check=False)
 
     seed_file = f"seeds/{new_org}.txt"
 
     if os.path.exists(seed_file):
         with st.spinner("Crawling via Tor..."):
             subprocess.run([
-                "python","-m",
-                "services.crawler.crawler_tor",
-                new_org,
-                seed_file,
-                "--rotate"
+                "python","-m","services.crawler.crawler_tor",
+                new_org, seed_file, "--rotate"
             ], check=False)
 
         st.success("Crawl Completed")
     else:
         st.error("Seed generation failed")
 
-
-# ==========================================================
-# DATA DISPLAY
-# ==========================================================
+# =============================
+# DISPLAY DATA
+# =============================
 if st.session_state.run_query:
 
     crawled = load_crawled(org, since_days, max_rows)
     threats = load_threats(org, since_days, min_severity, max_rows)
 
-    # Metrics
     col1,col2,col3,col4 = st.columns(4)
-    col1.metric("Pages Loaded", len(crawled))
-    col2.metric("Threats Loaded", len(threats))
+    col1.metric("Pages", len(crawled))
+    col2.metric("Threats", len(threats))
     col3.metric("High", (threats.severity=="high").sum())
     col4.metric("Critical", (threats.severity=="critical").sum())
 
@@ -207,10 +215,7 @@ if st.session_state.run_query:
 
     for _, row in threats.iterrows():
 
-        st.markdown(f"""
-**Org:** {row['org_name']}  
-**Severity:** {row['severity']}
-""")
+        st.markdown(f"**Org:** {row['org_name']}  \n**Severity:** {row['severity']}")
 
         if st.button(
             f"View Crawled Text — Page {row['crawled_page_id']}",
@@ -223,4 +228,26 @@ if st.session_state.run_query:
         st.write("---")
 
 else:
-    st.info("Set filters and press Refresh Crawled Data")
+    st.info("Enter org and click Refresh Crawled Data")
+
+# ==========================================================
+# AI REPORT SECTION
+# ==========================================================
+st.markdown("---")
+st.header("AI Threat Intelligence Report")
+
+if st.button("Generate Threat Intelligence Report", key="report_btn"):
+
+    if not org:
+        st.warning("Enter organization in sidebar first")
+    else:
+        with st.spinner("Generating AI threat report..."):
+
+            texts = get_pages_for_org(org)
+
+            if not texts:
+                st.error("No crawled data found for this org")
+            else:
+                report = generate_org_report(org, texts)
+                st.subheader("Generated Intelligence Report")
+                st.write(report)

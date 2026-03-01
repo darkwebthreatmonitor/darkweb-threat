@@ -1,5 +1,6 @@
 from sqlalchemy import text
 from services.ml.darkbert_infer import predict_text
+from services.llm.intel_engine import analyze_darkweb_content
 
 
 # -------------------------------------------------------
@@ -113,6 +114,7 @@ def analyze_page(engine, org_id, page_id, clean_text, org_name=None):
 
     severity = compute_severity(rule_hits, ml_conf)
 
+    
     # Evidence
     if rule_hits:
         indicator = rule_hits[0]
