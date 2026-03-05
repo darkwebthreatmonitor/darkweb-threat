@@ -117,41 +117,57 @@ def analyze_page(engine, org_id, page_id, clean_text, org_name=None):
     
     # Evidence
     if rule_hits:
-        indicator = rule_hits[0]
-        snippet = extract_snippet(clean_text, indicator)
-    else:
-        indicator = "ml-detected"
+     indicator = rule_hits[0]
+     snippet = extract_snippet(clean_text, indicator)
+
+    elif ml_conf > 0.5:
+        indicator = f"ml-class-{ml_label}"
         snippet = clean_text[:400]
 
+    else:
+        return
     # Save
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO threats (
-                org_id,
-                crawled_page_id,
-                indicator_type,
-                indicator,
-                severity,
-                evidence,
-                ml_label,
-                ml_confidence
-            )
-            VALUES (
-                :org_id,
-                :page_id,
-                'hybrid',
-                :indicator,
-                :severity,
-                :evidence,
-                :ml_label,
-                :ml_conf
-            )
-        """), {
-            "org_id": org_id,
-            "page_id": page_id,
-            "indicator": indicator,
-            "severity": severity,
-            "evidence": snippet,
-            "ml_label": ml_label,
-            "ml_conf": ml_conf
-        })
+    try:
+
+        if ml_label is None:
+            ml_label = 0
+            ml_conf = 0.0
+
+        print("Saving threat →", indicator)
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO threats (
+                    org_id,
+                    crawled_page_id,
+                    indicator_type,
+                    indicator,
+                    severity,
+                    evidence,
+                    ml_label,
+                    ml_confidence
+                )
+                VALUES (
+                    :org_id,
+                    :page_id,
+                    'hybrid',
+                    :indicator,
+                    :severity,
+                    :evidence,
+                    :ml_label,
+                    :ml_conf
+                )
+            """), {
+                "org_id": org_id,
+                "page_id": page_id,
+                "indicator": indicator,
+                "severity": severity,
+                "evidence": snippet,
+                "ml_label": ml_label,
+                "ml_conf": ml_conf
+            })
+
+        print("Threat inserted successfully")
+
+    except Exception as e:
+        print("DB INSERT ERROR:", e)
